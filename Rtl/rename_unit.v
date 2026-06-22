@@ -1,119 +1,176 @@
-// rename_unit.v
-// Register Rename Unit: Rename Map + Free List
-// Single-issue (one instruction per cycle), Week 3
-// Verilog-2001
+`timescale 1ns / 1ps
 
 module rename_unit #(
     parameter NUM_ARCH_REGS = 32,
     parameter NUM_PHYS_REGS = 48,
-    parameter ARCH_ADDR_W   = 5,                             // log2(32)
-    parameter PHYS_ADDR_W   = 6,                             // log2(48)
+    parameter ARCH_ADDR_W   = 5,
+    parameter PHYS_ADDR_W   = 6,
     parameter FREE_LIST_SZ  = NUM_PHYS_REGS - NUM_ARCH_REGS  // 16
 ) (
-    input  wire                   clk_i,
-    input  wire                   reset_i,
+    input  wire                    clk_i,
+    input  wire                    reset_i,
 
-    // ---------- Dispatch Port ----------
-    // Frontend presents one instruction per cycle
-    input  wire                   disp_valid_i,       // instruction present
-    input  wire [ARCH_ADDR_W-1:0] disp_rs1_arch_i,   // source 1 arch reg
-    input  wire [ARCH_ADDR_W-1:0] disp_rs2_arch_i,   // source 2 arch reg
-    input  wire [ARCH_ADDR_W-1:0] disp_rd_arch_i,    // dest arch reg
-    input  wire                   disp_writes_rd_i,   // 0 = no dest (sw/beq)
+    // ----------------------------------------------------------
+    // Slot A
+    // ----------------------------------------------------------
+    input  wire                    disp_A_valid_i,
+    input  wire [ARCH_ADDR_W-1:0]  disp_A_rs1_arch_i,
+    input  wire [ARCH_ADDR_W-1:0]  disp_A_rs2_arch_i,
+    input  wire [ARCH_ADDR_W-1:0]  disp_A_rd_arch_i,
+    input  wire                    disp_A_writes_rd_i,
+    output wire [PHYS_ADDR_W-1:0]  disp_A_rs1_phys_o,
+    output wire [PHYS_ADDR_W-1:0]  disp_A_rs2_phys_o,
+    output wire [PHYS_ADDR_W-1:0]  disp_A_rd_phys_o,
+    output wire [PHYS_ADDR_W-1:0]  disp_A_rd_old_phys_o,
 
-    output wire [PHYS_ADDR_W-1:0] disp_rs1_phys_o,   // source 1 physical reg
-    output wire [PHYS_ADDR_W-1:0] disp_rs2_phys_o,   // source 2 physical reg
-    output wire [PHYS_ADDR_W-1:0] disp_rd_phys_o,    // dest physical reg (new)
-    output wire [PHYS_ADDR_W-1:0] disp_rd_old_phys_o,// dest physical reg (old, for ROB rollback)
-    output wire                   stall_o,            // 1 = free list empty, front-end must stall
+    // ----------------------------------------------------------
+    // Slot B
+    // ----------------------------------------------------------
+    input  wire                    disp_B_valid_i,
+    input  wire [ARCH_ADDR_W-1:0]  disp_B_rs1_arch_i,
+    input  wire [ARCH_ADDR_W-1:0]  disp_B_rs2_arch_i,
+    input  wire [ARCH_ADDR_W-1:0]  disp_B_rd_arch_i,
+    input  wire                    disp_B_writes_rd_i,
+    output wire [PHYS_ADDR_W-1:0]  disp_B_rs1_phys_o,
+    output wire [PHYS_ADDR_W-1:0]  disp_B_rs2_phys_o,
+    output wire [PHYS_ADDR_W-1:0]  disp_B_rd_phys_o,
+    output wire [PHYS_ADDR_W-1:0]  disp_B_rd_old_phys_o,
 
-    // ---------- Commit Port ----------
-    // ROB returns old physical dest when an instruction commits
-    input  wire                   commit_valid_i,
-    input  wire [PHYS_ADDR_W-1:0] commit_old_phys_i  // pushed back onto free list
+    // ----------------------------------------------------------
+    // Stall outputs
+    // ----------------------------------------------------------
+    output wire                    stall_A_o,  // 1 = can't allocate even for A
+    output wire                    stall_B_o,  // 1 = can't allocate for both
+
+    // ----------------------------------------------------------
+    // Commit port — returns one phys reg to free list per cycle
+    // ----------------------------------------------------------
+    input  wire                    commit_valid_i,
+    input  wire [PHYS_ADDR_W-1:0]  commit_old_phys_i
 );
 
-    // -----------------------------------------------------------------
-    // Internal storage
-    // -----------------------------------------------------------------
-
-    // Rename map: arch reg -> physical reg
+    // ----------------------------------------------------------
+    // Rename map: arch reg → phys reg
+    // ----------------------------------------------------------
     reg [PHYS_ADDR_W-1:0] rename_map [0:NUM_ARCH_REGS-1];
 
-    // Free list: circular FIFO of available physical registers
+    // ----------------------------------------------------------
+    // Free list: circular FIFO
+    // ----------------------------------------------------------
     reg [PHYS_ADDR_W-1:0] free_list [0:FREE_LIST_SZ-1];
-
-    // Free list head/tail pointers (one extra bit to tell empty from full)
-    reg [$clog2(FREE_LIST_SZ):0] fl_head;
-    reg [$clog2(FREE_LIST_SZ):0] fl_tail;
-    reg [$clog2(FREE_LIST_SZ):0] fl_count;
+    reg [4:0] fl_head;
+    reg [4:0] fl_tail;
+    reg [4:0] fl_count;   // max value = 16, fits in 5 bits
 
     integer i;
 
-    // -----------------------------------------------------------------
-    // Helper wires
-    // -----------------------------------------------------------------
+    // ----------------------------------------------------------
+    // Allocation need signals
+    // ----------------------------------------------------------
+    wire A_needs_alloc = disp_A_valid_i & disp_A_writes_rd_i;
+    wire B_needs_alloc = disp_B_valid_i & disp_B_writes_rd_i;
 
-    // stall when we need a phys reg but none are available
-    assign stall_o = disp_valid_i & disp_writes_rd_i & (fl_count == 0);
+    // ----------------------------------------------------------
+    // Stall conditions
+    // ----------------------------------------------------------
+    assign stall_A_o = A_needs_alloc & (fl_count == 5'd0);
+    assign stall_B_o = A_needs_alloc & B_needs_alloc & (fl_count < 5'd2);
 
-    // actual dispatch happens only when valid, writes a dest, and not stalled
-    wire do_dispatch = disp_valid_i & disp_writes_rd_i & ~stall_o;
-    wire do_commit   = commit_valid_i;
+    // ----------------------------------------------------------
+    // Physical destinations from free list
+    // A gets fl_head, B gets fl_head+1 (if A also allocates)
+    // ----------------------------------------------------------
+    wire [PHYS_ADDR_W-1:0] A_new_phys =
+        free_list[fl_head[3:0]];   // fl_head mod FREE_LIST_SZ (16)
 
-    // -----------------------------------------------------------------
-    // Combinational outputs (all based on current rename_map / free_list)
-    // -----------------------------------------------------------------
+    wire [PHYS_ADDR_W-1:0] B_new_phys =
+        A_needs_alloc ? free_list[(fl_head + 1) % FREE_LIST_SZ]
+                      : free_list[fl_head[3:0]];
 
-    // Source lookups: just index into rename map
-    assign disp_rs1_phys_o     = rename_map[disp_rs1_arch_i];
-    assign disp_rs2_phys_o     = rename_map[disp_rs2_arch_i];
+    // ----------------------------------------------------------
+    // Intra-bundle bypass detection
+    // ----------------------------------------------------------
+    wire B_src1_uses_A  = A_needs_alloc &
+                          (disp_A_rd_arch_i == disp_B_rs1_arch_i);
+    wire B_src2_uses_A  = A_needs_alloc &
+                          (disp_A_rd_arch_i == disp_B_rs2_arch_i);
+    wire AB_write_same  = A_needs_alloc & B_needs_alloc &
+                          (disp_A_rd_arch_i == disp_B_rd_arch_i);
 
-    // Old dest: current mapping BEFORE this dispatch overwrites it
-    // ROB stores this for rollback
-    assign disp_rd_old_phys_o  = rename_map[disp_rd_arch_i];
+    // ----------------------------------------------------------
+    // Slot A combinational outputs
+    // ----------------------------------------------------------
+    assign disp_A_rs1_phys_o    = rename_map[disp_A_rs1_arch_i];
+    assign disp_A_rs2_phys_o    = rename_map[disp_A_rs2_arch_i];
+    assign disp_A_rd_phys_o     = A_needs_alloc ? A_new_phys
+                                                 : rename_map[disp_A_rd_arch_i];
+    assign disp_A_rd_old_phys_o = rename_map[disp_A_rd_arch_i];
 
-    // New dest: head of free list (what we will assign on clock edge)
-    assign disp_rd_phys_o      = free_list[fl_head[$clog2(FREE_LIST_SZ)-1:0]];
+    // ----------------------------------------------------------
+    // Slot B combinational outputs (with bypass muxes)
+    // ----------------------------------------------------------
+    assign disp_B_rs1_phys_o = B_src1_uses_A ? A_new_phys
+                                              : rename_map[disp_B_rs1_arch_i];
+    assign disp_B_rs2_phys_o = B_src2_uses_A ? A_new_phys
+                                              : rename_map[disp_B_rs2_arch_i];
+    assign disp_B_rd_phys_o  = B_needs_alloc ? B_new_phys
+                                              : rename_map[disp_B_rd_arch_i];
+    // WAW bypass: if both write same arch reg, B's old_phys = A's fresh dest
+    assign disp_B_rd_old_phys_o = AB_write_same ? A_new_phys
+                                                 : rename_map[disp_B_rd_arch_i];
 
-    // -----------------------------------------------------------------
+    // ----------------------------------------------------------
+    // Actual allocation signals (gated by stall)
+    // ----------------------------------------------------------
+    wire do_alloc_A = A_needs_alloc & ~stall_A_o;
+    wire do_alloc_B = B_needs_alloc & ~stall_B_o & ~stall_A_o;
+    wire do_commit  = commit_valid_i;
+
+    // ----------------------------------------------------------
     // Synchronous state update
-    // -----------------------------------------------------------------
+    // ----------------------------------------------------------
     always @(posedge clk_i) begin
         if (reset_i) begin
-            // Identity map: arch reg R lives in physical reg R
+            // Identity rename map: arch reg i → phys reg i
             for (i = 0; i < NUM_ARCH_REGS; i = i + 1)
                 rename_map[i] <= i[PHYS_ADDR_W-1:0];
-
-            // Free list holds physical regs 32..47 (the extras)
+            // Free list: phys regs 32..47
             for (i = 0; i < FREE_LIST_SZ; i = i + 1)
                 free_list[i] <= NUM_ARCH_REGS[PHYS_ADDR_W-1:0] + i[PHYS_ADDR_W-1:0];
-
-            fl_head  <= 0;
-            fl_tail  <= 0;
-            fl_count <= FREE_LIST_SZ[$clog2(FREE_LIST_SZ):0];
-
+            fl_head  <= 5'd0;
+            fl_tail  <= 5'd0;
+            fl_count <= 5'd16;
         end else begin
+            // Update rename map
+            // A's write first, then B's (B wins on WAW — last write takes effect)
+            if (do_alloc_A)
+                rename_map[disp_A_rd_arch_i] <= A_new_phys;
+            if (do_alloc_B)
+                rename_map[disp_B_rd_arch_i] <= B_new_phys;
 
-            // Dispatch: pop a physical reg from free list head,
-            //           update rename map for destination
-            if (do_dispatch) begin
-                rename_map[disp_rd_arch_i] <=
-                    free_list[fl_head[$clog2(FREE_LIST_SZ)-1:0]];
+            // Advance free list head
+            if (do_alloc_A & do_alloc_B)
+                fl_head <= (fl_head + 2) % FREE_LIST_SZ;
+            else if (do_alloc_A | do_alloc_B)
                 fl_head <= (fl_head + 1) % FREE_LIST_SZ;
-            end
 
-            // Commit: push old physical reg back onto free list tail
+            // Commit: push freed phys reg back onto tail of free list
             if (do_commit) begin
-                free_list[fl_tail[$clog2(FREE_LIST_SZ)-1:0]] <= commit_old_phys_i;
-                fl_tail <= (fl_tail + 1) % FREE_LIST_SZ;
+                free_list[fl_tail % FREE_LIST_SZ] <= commit_old_phys_i;
+                fl_tail  <= (fl_tail + 1) % FREE_LIST_SZ;
             end
 
-            // Update count: dispatch removes one, commit adds one
-            // If both happen in the same cycle, count is unchanged
-            fl_count <= fl_count
-                        - (do_dispatch ? 1 : 0)
-                        + (do_commit   ? 1 : 0);
+            // Free list count update
+            if (do_alloc_A & do_alloc_B & do_commit)
+                fl_count <= fl_count - 5'd1;
+            else if (do_alloc_A & do_alloc_B)
+                fl_count <= fl_count - 5'd2;
+            else if ((do_alloc_A | do_alloc_B) & do_commit)
+                fl_count <= fl_count;
+            else if (do_alloc_A | do_alloc_B)
+                fl_count <= fl_count - 5'd1;
+            else if (do_commit)
+                fl_count <= fl_count + 5'd1;
         end
     end
 
