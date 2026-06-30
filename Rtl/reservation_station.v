@@ -1,221 +1,265 @@
-`timescale 1ns / 1ps
+// =============================================================================
+// reservation_station.v  —  8-entry RS, 2-dispatch, 2-issue  (PRAVAH Week 6)
+//
+// Adapted to YOUR decode.v and dispatch.v:
+//   • No use_imm field — stores imm_i for every entry (ALU decides by op)
+//   • Dispatch port names match dispatch.v output names exactly:
+//       rs_disp_A_pj_o / rs_disp_A_pk_o / etc.
+//   • PRF snoop: 48-bit ready_vec_i (matches NUM_PHYS_REGS=48)
+//   • 2-pick mask-and-encode wakeup-select
+//   • Dispatch slot A: source readiness checked at dispatch time from ready_vec
+//   • ADDI wakeup: pk is treated as ready when op==ADDI (4'd8) since
+//     src2 is immediate, not a register
+// Verilog-2001 compatible.
+// =============================================================================
+`timescale 1ns/1ps
 
 module reservation_station #(
-    parameter NUM_RS      = 4,
+    parameter NUM_RS      = 8,
     parameter PHYS_ADDR_W = 6,
     parameter ROB_ADDR_W  = 3,
-    parameter OP_WIDTH    = 4
+    parameter OP_WIDTH    = 4,
+    parameter DATA_WIDTH  = 32,
+    parameter NUM_PHYS    = 48
 ) (
     input  wire clk_i,
     input  wire reset_i,
 
-    // ----------------------------------------------------------
-    // Dispatch port A (slot A)
-    // ----------------------------------------------------------
-    input  wire                           disp_A_valid_i,
-    input  wire [OP_WIDTH-1:0]            disp_A_op_i,
-    input  wire [PHYS_ADDR_W-1:0]         disp_A_pj_i,
-    input  wire [PHYS_ADDR_W-1:0]         disp_A_pk_i,
-    input  wire [PHYS_ADDR_W-1:0]         disp_A_pd_i,
-    input  wire [ROB_ADDR_W-1:0]          disp_A_rob_idx_i,
+    // ---- Dispatch port A (names mirror dispatch.v outputs) ----
+    input  wire                    rs_disp_A_valid_i,
+    input  wire [OP_WIDTH-1:0]     rs_disp_A_op_i,
+    input  wire [PHYS_ADDR_W-1:0]  rs_disp_A_pj_i,      // phys src1
+    input  wire [PHYS_ADDR_W-1:0]  rs_disp_A_pk_i,      // phys src2
+    input  wire [PHYS_ADDR_W-1:0]  rs_disp_A_pd_i,      // phys dest
+    input  wire [ROB_ADDR_W-1:0]   rs_disp_A_rob_idx_i,
+    input  wire [DATA_WIDTH-1:0]   rs_disp_A_imm_i,     // immediate from decode
 
-    // ----------------------------------------------------------
-    // Dispatch port B (slot B)
-    // ----------------------------------------------------------
-    input  wire                           disp_B_valid_i,
-    input  wire [OP_WIDTH-1:0]            disp_B_op_i,
-    input  wire [PHYS_ADDR_W-1:0]         disp_B_pj_i,
-    input  wire [PHYS_ADDR_W-1:0]         disp_B_pk_i,
-    input  wire [PHYS_ADDR_W-1:0]         disp_B_pd_i,
-    input  wire [ROB_ADDR_W-1:0]          disp_B_rob_idx_i,
+    // ---- Dispatch port B ----
+    input  wire                    rs_disp_B_valid_i,
+    input  wire [OP_WIDTH-1:0]     rs_disp_B_op_i,
+    input  wire [PHYS_ADDR_W-1:0]  rs_disp_B_pj_i,
+    input  wire [PHYS_ADDR_W-1:0]  rs_disp_B_pk_i,
+    input  wire [PHYS_ADDR_W-1:0]  rs_disp_B_pd_i,
+    input  wire [ROB_ADDR_W-1:0]   rs_disp_B_rob_idx_i,
+    input  wire [DATA_WIDTH-1:0]   rs_disp_B_imm_i,
 
-    output wire                           disp_stall_o,  // 1 = no free slot
+    // ---- Back-pressure ----
+    output wire                    rs_full_o,
 
-    // ----------------------------------------------------------
-    // PRF ready-bit snoop (flattened buses)
-    // ----------------------------------------------------------
-    output wire [NUM_RS*PHYS_ADDR_W-1:0]  snoop_pj_addr_o,
-    output wire [NUM_RS*PHYS_ADDR_W-1:0]  snoop_pk_addr_o,
-    input  wire [NUM_RS-1:0]              snoop_pj_ready_i,
-    input  wire [NUM_RS-1:0]              snoop_pk_ready_i,
+    // ---- PRF ready vector (48 bits, one per phys reg) ----
+    input  wire [NUM_PHYS-1:0]     prf_ready_vec_i,
 
-    // ----------------------------------------------------------
-    // Issue port (one issue per cycle)
-    // ----------------------------------------------------------
-    output wire                           issue_valid_o,
-    output wire [OP_WIDTH-1:0]            issue_op_o,
-    output wire [PHYS_ADDR_W-1:0]         issue_pj_o,
-    output wire [PHYS_ADDR_W-1:0]         issue_pk_o,
-    output wire [PHYS_ADDR_W-1:0]         issue_pd_o,
-    output wire [ROB_ADDR_W-1:0]          issue_rob_idx_o
+    // ---- Issue bus 0 → ALU0 ----
+    output wire                    issue_0_valid_o,
+    output wire [OP_WIDTH-1:0]     issue_0_op_o,
+    output wire [PHYS_ADDR_W-1:0]  issue_0_pj_o,
+    output wire [PHYS_ADDR_W-1:0]  issue_0_pk_o,
+    output wire [PHYS_ADDR_W-1:0]  issue_0_pd_o,
+    output wire [ROB_ADDR_W-1:0]   issue_0_rob_idx_o,
+    output wire [DATA_WIDTH-1:0]   issue_0_imm_o,
+
+    // ---- Issue bus 1 → ALU1 ----
+    output wire                    issue_1_valid_o,
+    output wire [OP_WIDTH-1:0]     issue_1_op_o,
+    output wire [PHYS_ADDR_W-1:0]  issue_1_pj_o,
+    output wire [PHYS_ADDR_W-1:0]  issue_1_pk_o,
+    output wire [PHYS_ADDR_W-1:0]  issue_1_pd_o,
+    output wire [ROB_ADDR_W-1:0]   issue_1_rob_idx_o,
+    output wire [DATA_WIDTH-1:0]   issue_1_imm_o
 );
 
-    // ----------------------------------------------------------
-    // Per-RS state
-    // ----------------------------------------------------------
-    reg                   rs_busy    [0:NUM_RS-1];
-    reg [OP_WIDTH-1:0]    rs_op      [0:NUM_RS-1];
-    reg [PHYS_ADDR_W-1:0] rs_pj      [0:NUM_RS-1];
-    reg [PHYS_ADDR_W-1:0] rs_pk      [0:NUM_RS-1];
-    reg [PHYS_ADDR_W-1:0] rs_pd      [0:NUM_RS-1];
-    reg [ROB_ADDR_W-1:0]  rs_rob_idx [0:NUM_RS-1];
+    // ---- RS entry storage ----
+    reg                    rs_busy    [0:NUM_RS-1];
+    reg [OP_WIDTH-1:0]     rs_op      [0:NUM_RS-1];
+    reg [PHYS_ADDR_W-1:0]  rs_pj      [0:NUM_RS-1];
+    reg [PHYS_ADDR_W-1:0]  rs_pk      [0:NUM_RS-1];
+    reg                    rs_qj_rdy  [0:NUM_RS-1];   // src1 ready (latched)
+    reg                    rs_qk_rdy  [0:NUM_RS-1];   // src2 ready (latched)
+    reg [PHYS_ADDR_W-1:0]  rs_pd      [0:NUM_RS-1];
+    reg [ROB_ADDR_W-1:0]   rs_rob_idx [0:NUM_RS-1];
+    reg [DATA_WIDTH-1:0]   rs_imm     [0:NUM_RS-1];
 
-    // ----------------------------------------------------------
-    // Combinational control
-    // ----------------------------------------------------------
-    wire [NUM_RS-1:0] rs_wakeup_ready;
-    wire [NUM_RS-1:0] rs_free;
-    wire [NUM_RS-1:0] issue_select;
-    wire [NUM_RS-1:0] dispatch_select_A;
-    wire [NUM_RS-1:0] dispatch_select_B;
+    // ---- Occupancy ----
+    reg [3:0] rs_count;
+    assign rs_full_o = (rs_count >= NUM_RS - 2);  // stop 2 from full (2-wide dispatch)
 
-    integer i;
+    // ---- ADDI detection: pk treated as ready when op==ADDI ----
+    // op encoding from YOUR decode.v: ADDI = 4'd8
+    wire is_addi_A = (rs_disp_A_op_i == 4'd8);
+    wire is_addi_B = (rs_disp_B_op_i == 4'd8);
+
+    // ---- Free-slot finder: lowest-index rs_busy==0 ----
+    wire [NUM_RS-1:0] rs_free_vec;
     genvar g;
-
-    // ----------------------------------------------------------
-    // Snoop address outputs
-    // ----------------------------------------------------------
     generate
-        for (g = 0; g < NUM_RS; g = g + 1) begin : snoop_gen
-            assign snoop_pj_addr_o[(g+1)*PHYS_ADDR_W-1 : g*PHYS_ADDR_W] = rs_pj[g];
-            assign snoop_pk_addr_o[(g+1)*PHYS_ADDR_W-1 : g*PHYS_ADDR_W] = rs_pk[g];
+        for (g = 0; g < NUM_RS; g = g + 1) begin : fv
+            assign rs_free_vec[g] = ~rs_busy[g];
         end
     endgenerate
 
-    // ----------------------------------------------------------
-    // Wakeup-ready (busy gate prevents false wakeup on reset)
-    // ----------------------------------------------------------
+    // Priority-encode first free slot (for dispatch A)
+    wire [NUM_RS-1:0] free_sel_A;
+    assign free_sel_A[0] = rs_free_vec[0];
+    assign free_sel_A[1] = rs_free_vec[1] & ~rs_free_vec[0];
+    assign free_sel_A[2] = rs_free_vec[2] & ~rs_free_vec[1] & ~rs_free_vec[0];
+    assign free_sel_A[3] = rs_free_vec[3] & ~rs_free_vec[2] & ~rs_free_vec[1] & ~rs_free_vec[0];
+    assign free_sel_A[4] = rs_free_vec[4] & ~rs_free_vec[3] & ~rs_free_vec[2] & ~rs_free_vec[1] & ~rs_free_vec[0];
+    assign free_sel_A[5] = rs_free_vec[5] & ~rs_free_vec[4] & ~rs_free_vec[3] & ~rs_free_vec[2] & ~rs_free_vec[1] & ~rs_free_vec[0];
+    assign free_sel_A[6] = rs_free_vec[6] & ~rs_free_vec[5] & ~rs_free_vec[4] & ~rs_free_vec[3] & ~rs_free_vec[2] & ~rs_free_vec[1] & ~rs_free_vec[0];
+    assign free_sel_A[7] = rs_free_vec[7] & ~rs_free_vec[6] & ~rs_free_vec[5] & ~rs_free_vec[4] & ~rs_free_vec[3] & ~rs_free_vec[2] & ~rs_free_vec[1] & ~rs_free_vec[0];
+
+    // Mask and find second free slot (for dispatch B)
+    wire [NUM_RS-1:0] free_rem  = rs_free_vec & ~free_sel_A;
+    wire [NUM_RS-1:0] free_sel_B;
+    assign free_sel_B[0] = free_rem[0];
+    assign free_sel_B[1] = free_rem[1] & ~free_rem[0];
+    assign free_sel_B[2] = free_rem[2] & ~free_rem[1] & ~free_rem[0];
+    assign free_sel_B[3] = free_rem[3] & ~free_rem[2] & ~free_rem[1] & ~free_rem[0];
+    assign free_sel_B[4] = free_rem[4] & ~free_rem[3] & ~free_rem[2] & ~free_rem[1] & ~free_rem[0];
+    assign free_sel_B[5] = free_rem[5] & ~free_rem[4] & ~free_rem[3] & ~free_rem[2] & ~free_rem[1] & ~free_rem[0];
+    assign free_sel_B[6] = free_rem[6] & ~free_rem[5] & ~free_rem[4] & ~free_rem[3] & ~free_rem[2] & ~free_rem[1] & ~free_rem[0];
+    assign free_sel_B[7] = free_rem[7] & ~free_rem[6] & ~free_rem[5] & ~free_rem[4] & ~free_rem[3] & ~free_rem[2] & ~free_rem[1] & ~free_rem[0];
+
+    // ---- Wakeup: entry ready when both sources ready ----
+    // src1 ready: latched OR current PRF snoop
+    // src2 ready: latched OR current PRF snoop OR is ADDI (op==8, pk unused)
+    wire [NUM_RS-1:0] wakeup_rdy;
     generate
-        for (g = 0; g < NUM_RS; g = g + 1) begin : wakeup_gen
-            assign rs_wakeup_ready[g] = rs_busy[g] &
-                                        snoop_pj_ready_i[g] &
-                                        snoop_pk_ready_i[g];
+        for (g = 0; g < NUM_RS; g = g + 1) begin : wk
+            wire pj_ok = rs_qj_rdy[g] | prf_ready_vec_i[rs_pj[g]];
+            wire pk_ok = rs_qk_rdy[g] | prf_ready_vec_i[rs_pk[g]]
+                       | (rs_op[g] == 4'd8);   // ADDI: pk unused
+            assign wakeup_rdy[g] = rs_busy[g] & pj_ok & pk_ok;
         end
     endgenerate
 
-    // ----------------------------------------------------------
-    // Free signals
-    // ----------------------------------------------------------
-    generate
-        for (g = 0; g < NUM_RS; g = g + 1) begin : free_gen
-            assign rs_free[g] = ~rs_busy[g];
-        end
-    endgenerate
+    // ---- Issue select: 2-pick mask-and-encode ----
+    // Pick 0 (lowest-index wakeup-ready)
+    wire [NUM_RS-1:0] issue_sel_0;
+    assign issue_sel_0[0] = wakeup_rdy[0];
+    assign issue_sel_0[1] = wakeup_rdy[1] & ~wakeup_rdy[0];
+    assign issue_sel_0[2] = wakeup_rdy[2] & ~wakeup_rdy[1] & ~wakeup_rdy[0];
+    assign issue_sel_0[3] = wakeup_rdy[3] & ~wakeup_rdy[2] & ~wakeup_rdy[1] & ~wakeup_rdy[0];
+    assign issue_sel_0[4] = wakeup_rdy[4] & ~wakeup_rdy[3] & ~wakeup_rdy[2] & ~wakeup_rdy[1] & ~wakeup_rdy[0];
+    assign issue_sel_0[5] = wakeup_rdy[5] & ~wakeup_rdy[4] & ~wakeup_rdy[3] & ~wakeup_rdy[2] & ~wakeup_rdy[1] & ~wakeup_rdy[0];
+    assign issue_sel_0[6] = wakeup_rdy[6] & ~wakeup_rdy[5] & ~wakeup_rdy[4] & ~wakeup_rdy[3] & ~wakeup_rdy[2] & ~wakeup_rdy[1] & ~wakeup_rdy[0];
+    assign issue_sel_0[7] = wakeup_rdy[7] & ~wakeup_rdy[6] & ~wakeup_rdy[5] & ~wakeup_rdy[4] & ~wakeup_rdy[3] & ~wakeup_rdy[2] & ~wakeup_rdy[1] & ~wakeup_rdy[0];
 
-    assign disp_stall_o = (disp_A_valid_i | disp_B_valid_i) &
-                          (rs_free == {NUM_RS{1'b0}});
+    // Pick 1 (mask out pick 0, then lowest-index)
+    wire [NUM_RS-1:0] wk_rem  = wakeup_rdy & ~issue_sel_0;
+    wire [NUM_RS-1:0] issue_sel_1;
+    assign issue_sel_1[0] = wk_rem[0];
+    assign issue_sel_1[1] = wk_rem[1] & ~wk_rem[0];
+    assign issue_sel_1[2] = wk_rem[2] & ~wk_rem[1] & ~wk_rem[0];
+    assign issue_sel_1[3] = wk_rem[3] & ~wk_rem[2] & ~wk_rem[1] & ~wk_rem[0];
+    assign issue_sel_1[4] = wk_rem[4] & ~wk_rem[3] & ~wk_rem[2] & ~wk_rem[1] & ~wk_rem[0];
+    assign issue_sel_1[5] = wk_rem[5] & ~wk_rem[4] & ~wk_rem[3] & ~wk_rem[2] & ~wk_rem[1] & ~wk_rem[0];
+    assign issue_sel_1[6] = wk_rem[6] & ~wk_rem[5] & ~wk_rem[4] & ~wk_rem[3] & ~wk_rem[2] & ~wk_rem[1] & ~wk_rem[0];
+    assign issue_sel_1[7] = wk_rem[7] & ~wk_rem[6] & ~wk_rem[5] & ~wk_rem[4] & ~wk_rem[3] & ~wk_rem[2] & ~wk_rem[1] & ~wk_rem[0];
 
-    // ----------------------------------------------------------
-    // Issue select: lowest-index wakeup-ready
-    // ----------------------------------------------------------
-    assign issue_select[0] =  rs_wakeup_ready[0];
-    assign issue_select[1] =  rs_wakeup_ready[1] & ~rs_wakeup_ready[0];
-    assign issue_select[2] =  rs_wakeup_ready[2] & ~rs_wakeup_ready[1]
-                                                  & ~rs_wakeup_ready[0];
-    assign issue_select[3] =  rs_wakeup_ready[3] & ~rs_wakeup_ready[2]
-                                                  & ~rs_wakeup_ready[1]
-                                                  & ~rs_wakeup_ready[0];
+    // ---- Issue mux: pick entry fields for each issue bus ----
+    wire [2:0] idx0 = issue_sel_0[0] ? 3'd0
+                    : issue_sel_0[1] ? 3'd1
+                    : issue_sel_0[2] ? 3'd2
+                    : issue_sel_0[3] ? 3'd3
+                    : issue_sel_0[4] ? 3'd4
+                    : issue_sel_0[5] ? 3'd5
+                    : issue_sel_0[6] ? 3'd6 : 3'd7;
 
-    // ----------------------------------------------------------
-    // Dispatch select A: lowest-index free RS
-    // ----------------------------------------------------------
-    assign dispatch_select_A[0] =  rs_free[0] & disp_A_valid_i;
-    assign dispatch_select_A[1] =  rs_free[1] & ~rs_free[0] & disp_A_valid_i;
-    assign dispatch_select_A[2] =  rs_free[2] & ~rs_free[1] & ~rs_free[0] & disp_A_valid_i;
-    assign dispatch_select_A[3] =  rs_free[3] & ~rs_free[2] & ~rs_free[1]
-                                              & ~rs_free[0] & disp_A_valid_i;
+    wire [2:0] idx1 = issue_sel_1[0] ? 3'd0
+                    : issue_sel_1[1] ? 3'd1
+                    : issue_sel_1[2] ? 3'd2
+                    : issue_sel_1[3] ? 3'd3
+                    : issue_sel_1[4] ? 3'd4
+                    : issue_sel_1[5] ? 3'd5
+                    : issue_sel_1[6] ? 3'd6 : 3'd7;
 
-    // ----------------------------------------------------------
-    // Dispatch select B: next-lowest free RS (excluding A's slot)
-    // rs_free_after_A[i] = rs_free[i] & ~dispatch_select_A[i]
-    // ----------------------------------------------------------
-    wire [NUM_RS-1:0] rs_free_for_B = rs_free & ~dispatch_select_A;
+    assign issue_0_valid_o   = |issue_sel_0;
+    assign issue_0_op_o      = rs_op     [idx0];
+    assign issue_0_pj_o      = rs_pj     [idx0];
+    assign issue_0_pk_o      = rs_pk     [idx0];
+    assign issue_0_pd_o      = rs_pd     [idx0];
+    assign issue_0_rob_idx_o = rs_rob_idx[idx0];
+    assign issue_0_imm_o     = rs_imm    [idx0];
 
-    assign dispatch_select_B[0] =  rs_free_for_B[0] & disp_B_valid_i;
-    assign dispatch_select_B[1] =  rs_free_for_B[1] & ~rs_free_for_B[0] & disp_B_valid_i;
-    assign dispatch_select_B[2] =  rs_free_for_B[2] & ~rs_free_for_B[1]
-                                                     & ~rs_free_for_B[0] & disp_B_valid_i;
-    assign dispatch_select_B[3] =  rs_free_for_B[3] & ~rs_free_for_B[2]
-                                                     & ~rs_free_for_B[1]
-                                                     & ~rs_free_for_B[0] & disp_B_valid_i;
+    assign issue_1_valid_o   = |issue_sel_1;
+    assign issue_1_op_o      = rs_op     [idx1];
+    assign issue_1_pj_o      = rs_pj     [idx1];
+    assign issue_1_pk_o      = rs_pk     [idx1];
+    assign issue_1_pd_o      = rs_pd     [idx1];
+    assign issue_1_rob_idx_o = rs_rob_idx[idx1];
+    assign issue_1_imm_o     = rs_imm    [idx1];
 
-    // ----------------------------------------------------------
-    // Issue port mux
-    // ----------------------------------------------------------
-    assign issue_valid_o = |issue_select;
-
-    assign issue_op_o =
-        issue_select[0] ? rs_op[0] :
-        issue_select[1] ? rs_op[1] :
-        issue_select[2] ? rs_op[2] :
-        issue_select[3] ? rs_op[3] : {OP_WIDTH{1'b0}};
-
-    assign issue_pj_o =
-        issue_select[0] ? rs_pj[0] :
-        issue_select[1] ? rs_pj[1] :
-        issue_select[2] ? rs_pj[2] :
-        issue_select[3] ? rs_pj[3] : {PHYS_ADDR_W{1'b0}};
-
-    assign issue_pk_o =
-        issue_select[0] ? rs_pk[0] :
-        issue_select[1] ? rs_pk[1] :
-        issue_select[2] ? rs_pk[2] :
-        issue_select[3] ? rs_pk[3] : {PHYS_ADDR_W{1'b0}};
-
-    assign issue_pd_o =
-        issue_select[0] ? rs_pd[0] :
-        issue_select[1] ? rs_pd[1] :
-        issue_select[2] ? rs_pd[2] :
-        issue_select[3] ? rs_pd[3] : {PHYS_ADDR_W{1'b0}};
-
-    assign issue_rob_idx_o =
-        issue_select[0] ? rs_rob_idx[0] :
-        issue_select[1] ? rs_rob_idx[1] :
-        issue_select[2] ? rs_rob_idx[2] :
-        issue_select[3] ? rs_rob_idx[3] : {ROB_ADDR_W{1'b0}};
-
-    // ----------------------------------------------------------
-    // Synchronous state update
-    // Order: issue clears, then A writes, then B writes.
-    // A and B are guaranteed distinct slots by rs_free_for_B.
-    // ----------------------------------------------------------
+    // ---- Synchronous updates ----
+    integer k;
     always @(posedge clk_i) begin
         if (reset_i) begin
-            for (i = 0; i < NUM_RS; i = i + 1) begin
-                rs_busy[i]    <= 1'b0;
-                rs_op[i]      <= {OP_WIDTH{1'b0}};
-                rs_pj[i]      <= {PHYS_ADDR_W{1'b0}};
-                rs_pk[i]      <= {PHYS_ADDR_W{1'b0}};
-                rs_pd[i]      <= {PHYS_ADDR_W{1'b0}};
-                rs_rob_idx[i] <= {ROB_ADDR_W{1'b0}};
+            rs_count <= 4'd0;
+            for (k = 0; k < NUM_RS; k = k + 1) begin
+                rs_busy  [k] <= 1'b0;
+                rs_qj_rdy[k] <= 1'b0;
+                rs_qk_rdy[k] <= 1'b0;
             end
         end else begin
-            // (1) Issue: clear busy
-            for (i = 0; i < NUM_RS; i = i + 1)
-                if (issue_select[i]) rs_busy[i] <= 1'b0;
 
-            // (2) Dispatch A
-            for (i = 0; i < NUM_RS; i = i + 1) begin
-                if (dispatch_select_A[i]) begin
-                    rs_busy[i]    <= 1'b1;
-                    rs_op[i]      <= disp_A_op_i;
-                    rs_pj[i]      <= disp_A_pj_i;
-                    rs_pk[i]      <= disp_A_pk_i;
-                    rs_pd[i]      <= disp_A_pd_i;
-                    rs_rob_idx[i] <= disp_A_rob_idx_i;
+            // ---- Latch source ready bits for all busy entries ----
+            for (k = 0; k < NUM_RS; k = k + 1) begin
+                if (rs_busy[k]) begin
+                    if (!rs_qj_rdy[k] && prf_ready_vec_i[rs_pj[k]])
+                        rs_qj_rdy[k] <= 1'b1;
+                    if (!rs_qk_rdy[k] && prf_ready_vec_i[rs_pk[k]])
+                        rs_qk_rdy[k] <= 1'b1;
                 end
             end
 
-            // (3) Dispatch B
-            for (i = 0; i < NUM_RS; i = i + 1) begin
-                if (dispatch_select_B[i]) begin
-                    rs_busy[i]    <= 1'b1;
-                    rs_op[i]      <= disp_B_op_i;
-                    rs_pj[i]      <= disp_B_pj_i;
-                    rs_pk[i]      <= disp_B_pk_i;
-                    rs_pd[i]      <= disp_B_pd_i;
-                    rs_rob_idx[i] <= disp_B_rob_idx_i;
+            // ---- Clear issued RS entries ----
+            for (k = 0; k < NUM_RS; k = k + 1) begin
+                if (issue_sel_0[k] | issue_sel_1[k])
+                    rs_busy[k] <= 1'b0;
+            end
+
+            // ---- Dispatch slot A into first free slot ----
+            if (rs_disp_A_valid_i && |free_sel_A) begin
+                for (k = 0; k < NUM_RS; k = k + 1) begin
+                    if (free_sel_A[k]) begin
+                        rs_busy   [k] <= 1'b1;
+                        rs_op     [k] <= rs_disp_A_op_i;
+                        rs_pj     [k] <= rs_disp_A_pj_i;
+                        rs_pk     [k] <= rs_disp_A_pk_i;
+                        rs_qj_rdy [k] <= prf_ready_vec_i[rs_disp_A_pj_i];
+                        // pk ready: current PRF snoop OR ADDI (src2 unused)
+                        rs_qk_rdy [k] <= prf_ready_vec_i[rs_disp_A_pk_i] | is_addi_A;
+                        rs_pd     [k] <= rs_disp_A_pd_i;
+                        rs_rob_idx[k] <= rs_disp_A_rob_idx_i;
+                        rs_imm    [k] <= rs_disp_A_imm_i;
+                    end
                 end
+            end
+
+            // ---- Dispatch slot B into second free slot ----
+            if (rs_disp_B_valid_i && |free_sel_B) begin
+                for (k = 0; k < NUM_RS; k = k + 1) begin
+                    if (free_sel_B[k]) begin
+                        rs_busy   [k] <= 1'b1;
+                        rs_op     [k] <= rs_disp_B_op_i;
+                        rs_pj     [k] <= rs_disp_B_pj_i;
+                        rs_pk     [k] <= rs_disp_B_pk_i;
+                        rs_qj_rdy [k] <= prf_ready_vec_i[rs_disp_B_pj_i];
+                        rs_qk_rdy [k] <= prf_ready_vec_i[rs_disp_B_pk_i] | is_addi_B;
+                        rs_pd     [k] <= rs_disp_B_pd_i;
+                        rs_rob_idx[k] <= rs_disp_B_rob_idx_i;
+                        rs_imm    [k] <= rs_disp_B_imm_i;
+                    end
+                end
+            end
+
+            // ---- Update count ----
+            begin : cnt
+                reg [3:0] issued_n, disp_n;
+                issued_n = {3'b0, |issue_sel_0} + {3'b0, |issue_sel_1};
+                disp_n   = {3'b0, rs_disp_A_valid_i & |free_sel_A}
+                         + {3'b0, rs_disp_B_valid_i & |free_sel_B};
+                rs_count <= rs_count + disp_n - issued_n;
             end
         end
     end
