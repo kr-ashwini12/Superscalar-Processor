@@ -1,8 +1,20 @@
 `timescale 1ns/1ps
 
 module pravah_top (
-    input wire clk_i,
-    input wire reset_i
+    input  wire        clk_i,
+    input  wire        reset_i,
+    output wire        commit_A_valid_o,
+    output wire        commit_B_valid_o,
+    output wire [4:0]  commit_A_arch_o,
+    output wire [4:0]  commit_B_arch_o,
+    output wire [5:0]  commit_A_phys_o,
+    output wire [5:0]  commit_B_phys_o,
+    output wire        rob_full_o,
+    output wire        rs_full_o,
+    output wire        fe_stall_o,
+    output wire [31:0] debug_pc_A_o,
+    output wire [31:0] alu0_result_o,
+    output wire [31:0] alu1_result_o
 );
 
     // =========================================================================
@@ -201,6 +213,8 @@ module pravah_top (
         // ROB back-pressure
         .rob_tail_i           (rob_tail),
         .rob_full_i           (rob_full),
+        // RS back-pressure — dispatch stalls when RS is full
+        .rs_full_i            (rs_full),
         // ROB allocation outputs
         .rob_alloc_A_o        (disp_rob_alloc_A),
         .rob_A_arch_dest_o    (disp_rob_arch_A),
@@ -253,6 +267,13 @@ module pravah_top (
         .rs_full_o          (rs_full),
         // PRF snoop
         .prf_ready_vec_i    (prf_ready_vec),
+        // Alloc ports — tells RS which phys regs are being allocated THIS
+        // cycle, so it doesn't mistakenly mark a brand-new dest as ready.
+        // Same signals that feed the PRF's alloc ports below.
+        .alloc_en1_i        (disp_rob_alloc_A & disp_rob_wrrd_A),
+        .alloc_addr1_i      (disp_rob_phys_A),
+        .alloc_en2_i        (disp_rob_alloc_B & disp_rob_wrrd_B),
+        .alloc_addr2_i      (disp_rob_phys_B),
         // Issue bus 0
         .issue_0_valid_o    (issue_0_valid),
         .issue_0_op_o       (issue_0_op),
@@ -376,5 +397,24 @@ module pravah_top (
         .commit_B_arch_dest_o (rob_commit_B_arch),
         .commit_B_phys_dest_o (rob_commit_B_phys)
     );
+
+    // =========================================================================
+    // Debug output assignments
+    // Tying these to internal signals keeps the whole datapath they depend
+    // on (ROB, RS, PRF ready logic, both ALUs, dispatch/rename) reachable
+    // from a pin, so Quartus can't optimize it away.
+    // =========================================================================
+    assign commit_A_valid_o = rob_commit_A_valid;
+    assign commit_B_valid_o = rob_commit_B_valid;
+    assign commit_A_arch_o  = rob_commit_A_arch;
+    assign commit_B_arch_o  = rob_commit_B_arch;
+    assign commit_A_phys_o  = rob_commit_A_phys;
+    assign commit_B_phys_o  = rob_commit_B_phys;
+    assign rob_full_o       = rob_full;
+    assign rs_full_o        = rs_full;
+    assign fe_stall_o       = fe_stall;
+    assign debug_pc_A_o     = fet_pc_A;
+    assign alu0_result_o    = alu0_result;
+    assign alu1_result_o    = alu1_result;
 
 endmodule

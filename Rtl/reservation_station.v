@@ -1,17 +1,3 @@
-// =============================================================================
-// reservation_station.v  —  8-entry RS, 2-dispatch, 2-issue  (PRAVAH Week 6)
-//
-// Adapted to YOUR decode.v and dispatch.v:
-//   • No use_imm field — stores imm_i for every entry (ALU decides by op)
-//   • Dispatch port names match dispatch.v output names exactly:
-//       rs_disp_A_pj_o / rs_disp_A_pk_o / etc.
-//   • PRF snoop: 48-bit ready_vec_i (matches NUM_PHYS_REGS=48)
-//   • 2-pick mask-and-encode wakeup-select
-//   • Dispatch slot A: source readiness checked at dispatch time from ready_vec
-//   • ADDI wakeup: pk is treated as ready when op==ADDI (4'd8) since
-//     src2 is immediate, not a register
-// Verilog-2001 compatible.
-// =============================================================================
 `timescale 1ns/1ps
 
 module reservation_station #(
@@ -48,6 +34,13 @@ module reservation_station #(
 
     // ---- PRF ready vector (48 bits, one per phys reg) ----
     input  wire [NUM_PHYS-1:0]     prf_ready_vec_i,
+
+    // ---- Alloc ports (which phys regs are being allocated THIS cycle) ----
+    // Needed so RS doesn't mark a just-allocated reg as ready at dispatch time
+    input  wire                    alloc_en1_i,
+    input  wire [PHYS_ADDR_W-1:0]  alloc_addr1_i,
+    input  wire                    alloc_en2_i,
+    input  wire [PHYS_ADDR_W-1:0]  alloc_addr2_i,
 
     // ---- Issue bus 0 → ALU0 ----
     output wire                    issue_0_valid_o,
@@ -190,6 +183,11 @@ module reservation_station #(
     assign issue_1_rob_idx_o = rs_rob_idx[idx1];
     assign issue_1_imm_o     = rs_imm    [idx1];
 
+    // ---- Count wires (module-level, avoids local reg in always block) ----
+    wire [3:0] rs_issue_cnt = {3'b0, |issue_sel_0} + {3'b0, |issue_sel_1};
+    wire [3:0] rs_disp_cnt  = {3'b0, rs_disp_A_valid_i & |free_sel_A}
+                             + {3'b0, rs_disp_B_valid_i & |free_sel_B};
+
     // ---- Synchronous updates ----
     integer k;
     always @(posedge clk_i) begin
@@ -226,9 +224,14 @@ module reservation_station #(
                         rs_op     [k] <= rs_disp_A_op_i;
                         rs_pj     [k] <= rs_disp_A_pj_i;
                         rs_pk     [k] <= rs_disp_A_pk_i;
-                        rs_qj_rdy [k] <= prf_ready_vec_i[rs_disp_A_pj_i];
-                        // pk ready: current PRF snoop OR ADDI (src2 unused)
-                        rs_qk_rdy [k] <= prf_ready_vec_i[rs_disp_A_pk_i] | is_addi_A;
+                        // Source ready: PRF says ready AND not being allocated this cycle
+                        rs_qj_rdy [k] <= prf_ready_vec_i[rs_disp_A_pj_i]
+                                       & ~(alloc_en1_i & (alloc_addr1_i == rs_disp_A_pj_i))
+                                       & ~(alloc_en2_i & (alloc_addr2_i == rs_disp_A_pj_i));
+                        rs_qk_rdy [k] <= (prf_ready_vec_i[rs_disp_A_pk_i]
+                                       & ~(alloc_en1_i & (alloc_addr1_i == rs_disp_A_pk_i))
+                                       & ~(alloc_en2_i & (alloc_addr2_i == rs_disp_A_pk_i)))
+                                       | is_addi_A;
                         rs_pd     [k] <= rs_disp_A_pd_i;
                         rs_rob_idx[k] <= rs_disp_A_rob_idx_i;
                         rs_imm    [k] <= rs_disp_A_imm_i;
@@ -244,8 +247,13 @@ module reservation_station #(
                         rs_op     [k] <= rs_disp_B_op_i;
                         rs_pj     [k] <= rs_disp_B_pj_i;
                         rs_pk     [k] <= rs_disp_B_pk_i;
-                        rs_qj_rdy [k] <= prf_ready_vec_i[rs_disp_B_pj_i];
-                        rs_qk_rdy [k] <= prf_ready_vec_i[rs_disp_B_pk_i] | is_addi_B;
+                        rs_qj_rdy [k] <= prf_ready_vec_i[rs_disp_B_pj_i]
+                                       & ~(alloc_en1_i & (alloc_addr1_i == rs_disp_B_pj_i))
+                                       & ~(alloc_en2_i & (alloc_addr2_i == rs_disp_B_pj_i));
+                        rs_qk_rdy [k] <= (prf_ready_vec_i[rs_disp_B_pk_i]
+                                       & ~(alloc_en1_i & (alloc_addr1_i == rs_disp_B_pk_i))
+                                       & ~(alloc_en2_i & (alloc_addr2_i == rs_disp_B_pk_i)))
+                                       | is_addi_B;
                         rs_pd     [k] <= rs_disp_B_pd_i;
                         rs_rob_idx[k] <= rs_disp_B_rob_idx_i;
                         rs_imm    [k] <= rs_disp_B_imm_i;
@@ -253,14 +261,8 @@ module reservation_station #(
                 end
             end
 
-            // ---- Update count ----
-            begin : cnt
-                reg [3:0] issued_n, disp_n;
-                issued_n = {3'b0, |issue_sel_0} + {3'b0, |issue_sel_1};
-                disp_n   = {3'b0, rs_disp_A_valid_i & |free_sel_A}
-                         + {3'b0, rs_disp_B_valid_i & |free_sel_B};
-                rs_count <= rs_count + disp_n - issued_n;
-            end
+            // ---- Update count (use module-level wires, no local reg) ----
+            rs_count <= rs_count + rs_disp_cnt - rs_issue_cnt;
         end
     end
 

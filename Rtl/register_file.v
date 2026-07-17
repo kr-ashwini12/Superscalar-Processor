@@ -1,13 +1,3 @@
-// =============================================================================
-// register_file.v  —  Physical Register File  (PRAVAH Week 6)
-//
-// YOUR Week 3/5 file with ONE change:
-//   Added alloc_en2_i / alloc_addr2_i  (second allocate port for 2-wide dispatch)
-//
-// Everything else identical: NUM_PHYS_REGS=48, 4 read ports, 2 write ports,
-// write-before-read bypass, all regs start ready=1 at reset.
-// Verilog-2001 compatible.
-// =============================================================================
 `timescale 1ns/1ps
 
 module register_file #(
