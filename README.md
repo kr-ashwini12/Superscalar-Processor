@@ -56,48 +56,49 @@ Full methodology and gap analysis: [`docs/performance.md`](docs/performance.md)
 
 ## Repository Structure
 
+```text
 pravah/
 |-- README.md
 |-- Rtl/
-| |-- fetch.v
-| |-- decode.v
-| |-- rename_unit.v
-| |-- register_file.v
-| |-- reservation_station.v
-| |-- rob.v
-| |-- alu.v
-| |-- pravah_top.v
-| |-- dispatch.v
+|   |-- fetch.v
+|   |-- decode.v
+|   |-- rename_unit.v
+|   |-- register_file.v
+|   |-- reservation_station.v
+|   |-- rob.v
+|   |-- alu.v
+|   |-- pravah_top.v
+|   |-- dispatch.v
 |-- sim/
-| |-- (ModelSim scripts and waveform screenshots)
+|   |-- (ModelSim scripts and waveform screenshots)
 |-- docs/
-| |-- week 7/
-| | |--quartus_resource_utilisation.png
-| | |--quartus_timing.png
-| |-- design_decisions.md 
-| |-- performance.md 
-| |-- final_report.pdf 
-| |-- block_diagram.png 
-| |-- retrospective.md 
+|   |-- week 7/
+|   |   |-- quartus_resource_utilisation.png
+|   |   |-- quartus_timing.png
+|   |-- design_decisions.md
+|   |-- performance.md
+|   |-- final_report.pdf
+|   |-- block_diagram.png
+|   |-- retrospective.md
 |-- programs/
-| |-- dot_product.hex
-| |-- bench_independent.hex
-| |-- bench_chain.hex
-| |-- bench_mixed.hex
-| |-- test1.hex
+|   |-- dot_product.hex
+|   |-- bench_independent.hex
+|   |-- bench_chain.hex
+|   |-- bench_mixed.hex
+|   |-- test1.hex
 |-- quartus/
-| |-- pravah.qpf
+|   |-- pravah.qpf
 |-- tb/
-| |-- tb_register_file.v
-| |-- tb_rename_unit.v
-| |-- tb_reservation_station.v
-| |-- tb_pravah_top.v
-| |-- tb_pravah_perf.v
-| |-- tb_frontend.v
-| |-- week2/
-| |-- week1/
+|   |-- tb_register_file.v
+|   |-- tb_rename_unit.v
+|   |-- tb_reservation_station.v
+|   |-- tb_pravah_top.v
+|   |-- tb_pravah_perf.v
+|   |-- tb_frontend.v
+|   |-- week2/
+|   |-- week1/
 |-- .gitignore
-
+```
 
 ## Build and Run
 
@@ -105,35 +106,45 @@ pravah/
 
 - Quartus Prime Lite (tested with 18.1)
 - ModelSim — Intel Starter Edition (Run indepndently) (I have used segragately because of directory problem but can be bundled as well)
-
+  
 ### Simulate a single module ROB test
+```bash
 cd "E:/SOS proj"
+
 vlib work
 vlog rob.v tb_rob.v
 vsim -c -do "run -all; quit" tb_rob
+```
 
 ### Run the full integration test
+```bash
 cd "E:/SOS proj"
 vlib work
 vmap work work
 vlog fetch.v decode.v rename_unit.v dispatch.v register_file.v reservation_station.v alu.v rob.v pravah_top.v tb_pravah_perf.v
 vsim work.tb_pravah_perf
 run -all
+```
 
-# Expected output: "PASS" with final register values matching reference.
-# x1=2, x2=3, x3=5, x4=7, x5=34, x6=36, x7=17
+### Expected output: "PASS" with final register values matching reference.
+### x1=2, x2=3, x3=5, x4=7, x5=34, x6=36, x7=17
 
 ### Measure IPC
-
+```bash
 vlog fetch.v decode.v rename_unit.v dispatch.v register_file.v reservation_station.v alu.v rob.v pravah_top.v tb_pravah_perf.v
 vsim -c -do "run -all; quit" tb_pravah_perf
-# Reports IPC for each benchmark:
-# Independent: ss~1.7-2.0
-# Chain:       ss~0.9-1.0
-# Mixed:       ss~1.2-1.6
+```
+### Reports IPC for each benchmark:
+### Independent: 1.6
+### Chain:       0.8889
+### Mixed:       1.4545
 
-## NOTE: In cd command you have to write the path where all rtls, tbs are saved .
-## Like cd "E:/SOS proj"
+> **Note:** In the `cd` command, write the path where all RTL and testbench files are stored.
+> Example:
+>
+> ```bash
+> cd "E:/SOS proj"
+> ``
 
 ### Synthesize (Quartus)
 
