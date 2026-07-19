@@ -1,8 +1,5 @@
 # PRAVAH — Week 7 Performance Report
 
-**Name:** ASHWINI KUMAR
----
-
 ## 1. IPC Results
 
 | Benchmark    | Instructions Committed | First Commit Cycle  | Last Commit Cycle  | End-to-End IPC  | Steady-State IPC |
@@ -26,9 +23,7 @@
 | Total logic elements      |  332   |
 | Total registers           |  139   |
 | Total pins                |  125   |
-| Critical path (named)     |        |
 
-**Critical path description:** _(name the actual path Quartus reports — e.g. PRF ready bit → RS wakeup logic → priority encoder → issue mux → ALU → PRF write. If it's not the wakeup-select loop, state what it is instead.)_
 
 ---
 
