@@ -1,0 +1,29 @@
+# .gitignore for PRAVAH
+
+# Quartus generated
+quartus/db/
+quartus/incremental_db/
+quartus/output_files/
+quartus/*.qws
+quartus/*.rpt
+quartus/*.summary
+quartus/*.smsg
+quartus/*.pin
+quartus/*.pof
+quartus/*.sof
+
+# ModelSim generated
+sim/work/
+sim/transcript
+sim/*.wlf
+sim/*.vstf
+modelsim.ini
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor junk
+*.swp
+*~
+.vscode/
