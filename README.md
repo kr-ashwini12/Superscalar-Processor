@@ -183,7 +183,8 @@ vsim -c -do "run -all; quit" tb_pravah_perf
 [Link to 5-minute demo video](#) — https://drive.google.com/drive/folders/1ADpo2Q67bXX-0-1Bc1AOK2g3eoYgZPAP?usp=drive_link
 
 ## Author & Acknowledgments
-
-Built as part of **Seasons of Code 2026**, IIT Bombay.
+```bash
+Built as part of Seasons of Code 2026, IIT Bombay.
 Author: Ashwini Kumar
 Mentors: Krishna Kukreja & Naman Nayak
+```
