@@ -58,7 +58,6 @@ Full methodology and gap analysis: [`docs/performance.md`](docs/performance.md)
 
 ```text
 pravah/
-|-- README.md
 |-- Rtl/
 |   |-- fetch.v
 |   |-- decode.v
@@ -98,6 +97,7 @@ pravah/
 |   |-- week2/
 |   |-- week1/
 |-- .gitignore
+|-- README.md
 ```
 
 ## Build and Run
@@ -126,25 +126,27 @@ vsim work.tb_pravah_perf
 run -all
 ```
 
-### Expected output: "PASS" with final register values matching reference.
-### x1=2, x2=3, x3=5, x4=7, x5=34, x6=36, x7=17
+> **Expected output**: "PASS" with final register values matching reference.
+> x1=2, x2=3, x3=5, x4=7, x5=34, x6=36, x7=17
 
 ### Measure IPC
 ```bash
 vlog fetch.v decode.v rename_unit.v dispatch.v register_file.v reservation_station.v alu.v rob.v pravah_top.v tb_pravah_perf.v
 vsim -c -do "run -all; quit" tb_pravah_perf
 ```
-### Reports IPC for each benchmark:
-### Independent: 1.6
-### Chain:       0.8889
-### Mixed:       1.4545
+> **Reports IPC for each benchmark**:
+> ```bash
+> Independent: 1.6
+>  Chain:       0.8889
+>  Mixed:       1.4545
+> ```
 
 > **Note:** In the `cd` command, write the path where all RTL and testbench files are stored.
 > Example:
 >
 > ```bash
 > cd "E:/SOS proj"
-> ``
+> ```
 
 ### Synthesize (Quartus)
 
