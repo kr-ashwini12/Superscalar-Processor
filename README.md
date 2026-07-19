@@ -1,186 +1,176 @@
-<div align="center">
+# PRAVAH (प्रवाह — "flow")
 
-# PRAVAH
-### A 2-Wide Out-of-Order Superscalar RISC-V Processor
+**A 2-wide out-of-order superscalar RISC-V processor, implemented from scratch in synthesizable Verilog.**
 
-<!--*Seasons of Code 2026 · IIT Bombay*-->
-
-[![Verilog](https://img.shields.io/badge/HDL-Verilog-blue.svg)]()
-[![ISA](https://img.shields.io/badge/ISA-RISC--V%20(RV32I)-orange.svg)]()
-[![Tools](https://img.shields.io/badge/Tools-Quartus%20%2B%20ModelSim-green.svg)]()
-[![Status](https://img.shields.io/badge/Status-In%20Progress-yellow.svg)]()
-
-</div>
+Built as part of Seasons of Code 2026, IIT Bombay. PRAVAH implements Tomasulo's algorithm — register renaming, reservation stations, out-of-order dispatch and execution, and in-order commit via a reorder buffer — the same architectural principles that power modern out-of-order cores like Apple's M-series and AMD's Zen.
 
 ---
 
-## About
+## Overview
 
-**PRAVAH** (प्रवाह — "flow") is a 2-wide out-of-order superscalar processor built from scratch in Verilog as part of **Seasons of Code 2026** at IIT Bombay. The project takes 2nd-year undergraduates from a textbook understanding of 5-stage pipelined MIPS to a working out-of-order RISC-V core, implementing the same architectural principles that power modern CPUs like Apple's M-series and AMD's Zen cores.
+PRAVAH fetches two RV32I instructions per cycle, renames architectural registers to a pool of physical registers to eliminate false (WAW/WAR) dependencies, dispatches instructions out of program order into reservation stations as soon as their operands are ready, executes them on parallel ALUs, and commits results back in strict program order through an 8-entry reorder buffer. The goal is architectural, not performance: to build — not just study — the mechanism that lets a scalar-in-order-looking programmer's model run on genuinely out-of-order hardware underneath.
 
-Mentees fetch two instructions per cycle, rename registers to eliminate false dependencies, dispatch them out of order through reservation stations, execute on multiple functional units, and commit them in order via a reorder buffer — Tomasulo's algorithm, brought to life in synthesizable RTL.
+## Architecture
 
-> **Scope:** This project is **simulation-based**. The full processor is developed, verified, and benchmarked on ModelSim. The RTL is written to be synthesizable, so the design can be extended to run on any Intel Cyclone FPGA (Cyclone V, DE10-Lite, DE10-Standard, etc.) in the future — but FPGA bring-up is **not** a requirement of the program. Simulation correctness and a clean Quartus synthesis report are the deliverables.
+![PRAVAH Block Diagram](docs/block_diagram.png)
 
-## What we're building
+**Pipeline:** Fetch (×2) → Decode (×2) → Rename → Dispatch → Reservation Stations → Execute (2× ALU) → Reorder Buffer (commit, in-order, ×2)
 
-A synthesizable 2-wide superscalar processor with:
+| Structure | Size |
+|---|---|
+| Physical register file | 48 entries (32 architectural + 16 renaming registers) |
+| Reservation stations | 8 entries, shared across 2 ALUs |
+| Reorder buffer | 8 entries |
+| Fetch/decode/dispatch width | 2-wide |
+| Commit width | 1 physical-register-free per cycle (see Limitations) |
 
-- **2-wide fetch** with aligned instruction memory
-- **2-wide decoder** producing internal micro-ops
-- **Register renaming** with a physical register file (48–64 physical registers)
-- **Reservation stations** (4 ALU + 2 MUL/MEM) with CDB snooping
-- **Reorder buffer** (8–16 entries) for precise in-order commit
-- **Functional units:** 2 ALUs, 1 multi-cycle multiplier, 1 load/store unit
-- **Common data bus** with arbitration
-- **2-bit saturating branch predictor**
+## Features
 
-**Target ISA:** RISC-V RV32I subset (~12–15 instructions: ADD, SUB, AND, OR, XOR, SLL, SRL, SLT, ADDI, LW, SW, BEQ, BNE, JAL)
+- 2-wide in-order fetch and decode
+- Register renaming via a physical register file and free list (eliminates WAW/WAR hazards)
+- Intra-bundle dependency handling (slot B correctly sees slot A's rename within the same cycle)
+- 8-entry reservation stations with mask-and-encode wakeup/select logic (2 issues/cycle)
+- Out-of-order dispatch and execution across 2 ALUs
+- 8-entry reorder buffer enforcing strict in-order commit
+- Cycle-accurate IPC measurement harness
+- Synthesizes cleanly on Intel MAX 10 (10M50DAF484C7G) via Quartus Prime
 
-**Target FPGA (for synthesis sign-off):** Intel Cyclone V / DE10-Lite — design is verified to synthesize cleanly but is not deployed on hardware in this program.
+## Results
 
-## Tech stack
+### IPC (Instructions Per Cycle)
 
-| Layer           | Tool                          |
-|-----------------|-------------------------------|
-| HDL             | Verilog                       |
-| Simulation      | ModelSim-Intel Starter Edition|
-| Synthesis       | Quartus Prime Lite            |
-| ISA             | RISC-V (RV32I subset)         |
-| Version control | Git + GitHub                  |
+| Benchmark    | Instructions Committed | First Commit Cycle  | Last Commit Cycle  | End-to-End IPC  | Steady-State IPC |
+|--------------|:----------------------:|:-------------------:|:------------------:|:---------------:|:------------------:|
+| Independent  |       16 / 16          |        3            |        10          |       1.6       |     2.0            |
+| Chain        |       16 / 16          |        3            |        18          |       0.889     |     1.0            |
+| Mixed        |       16 / 16          |        3            |        11          |       1.4545    |     1.7778         |
 
-## Repository structure (tentative)
+Full methodology and gap analysis: [`docs/performance.md`](docs/performance.md)
 
-> **Note to mentees:** Please mirror this exact directory structure in your own fork. It is not arbitrary — it matches how the mentor will review your code, where the milestone scripts expect files to live, and how the debugging checklist references modules. Following this structure will save significant time when something breaks at Milestone 3 and we need to bisect the bug together. A clean, predictable repo also looks great on a resume.
+### Synthesis (Intel MAX 10, 10M50DAF484C7G)
 
-```
+- Fmax (Slow 1200mV 85C): 85.8 MHz
+- Total logic elements: 332
+- Total registers: 139
+- Critical path: RS wakeup-select loop (PRF ready bit → per-entry ready compare → priority-encode issue select → issue mux → ALU → PRF writeback)
+
+## Repository Structure
+
 pravah/
-├── README.md
-├── docs/                        # Design documents, block diagrams, reports
-│   ├── design_decisions.md
-│   ├── block_diagram.png
-│   └── final_report.pdf
-├── rtl/                         # Synthesizable Verilog modules
-│   ├── fetch.v
-│   ├── decode.v
-│   ├── rename_unit.v
-│   ├── register_file.v
-│   ├── reservation_station.v
-│   ├── rob.v
-│   ├── alu.v
-│   ├── mul.v
-│   ├── lsu.v
-│   ├── cdb.v
-│   └── top.v
-├── tb/                          # Testbenches
-│   ├── tb_register_file.v
-│   ├── tb_reservation_station.v
-│   ├── tb_rob.v
-│   └── tb_top.v
-├── programs/                    # Benchmark micro-programs (hex/asm)
-│   ├── dot_product.hex
-│   ├── bubble_sort.hex
-│   └── branch_heavy.hex
-├── quartus/                     # Quartus project files
-├── sim/                         # ModelSim scripts and waveforms
-├── learning_log.md              # Weekly learning notes
-└── LICENSE
-```
+|-- README.md
+|-- Rtl/
+| |-- fetch.v
+| |-- decode.v
+| |-- rename_unit.v
+| |-- register_file.v
+| |-- reservation_station.v
+| |-- rob.v
+| |-- alu.v
+| |-- pravah_top.v
+| |-- dispatch.v
+|-- sim/
+| |-- (ModelSim scripts and waveform screenshots)
+|-- docs/
+| |-- week 7/
+| | |--quartus_resource_utilisation.png
+| | |--quartus_timing.png
+| |-- design_decisions.md 
+| |-- performance.md 
+| |-- final_report.pdf 
+| |-- block_diagram.png 
+| |-- retrospective.md 
+|-- programs/
+| |-- dot_product.hex
+| |-- bench_independent.hex
+| |-- bench_chain.hex
+| |-- bench_mixed.hex
+| |-- test1.hex
+|-- quartus/
+| |-- pravah.qpf
+|-- tb/
+| |-- tb_register_file.v
+| |-- tb_rename_unit.v
+| |-- tb_reservation_station.v
+| |-- tb_pravah_top.v
+| |-- tb_pravah_perf.v
+| |-- tb_frontend.v
+| |-- week2/
+| |-- week1/
+|-- .gitignore
 
-## How it works (high level)
 
-```
-        ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
-   ────►│  FETCH   ├──►│  DECODE  ├──►│  RENAME  ├──►│ DISPATCH │
-        │ (2-wide) │   │ (2-wide) │   │  + ROB   │   │          │
-        └──────────┘   └──────────┘   └──────────┘   └────┬─────┘
-                                                          │
-                ┌─────────────────────────────────────────┘
-                │
-                ▼
-        ┌───────────────┐   wakeup    ┌──────────────┐
-        │ RESERVATION   ├────────────►│ FUNC. UNITS  │
-        │   STATIONS    │             │ ALU/ALU/MUL  │
-        │               │◄────────────┤   /LSU       │
-        └───────┬───────┘   CDB       └──────┬───────┘
-                │  broadcast                 │
-                │                            │
-                └────────────►  CDB  ◄───────┘
-                                │
-                                ▼
-                          ┌──────────┐
-                          │   ROB    │  in-order commit → arch RF
-                          │ (commit) │
-                          └──────────┘
-```
+## Build and Run
 
-A real block diagram will replace this ASCII sketch from Week 5 onward (see `docs/block_diagram.png`).
+### Prerequisites
 
-## Progress
+- Quartus Prime Lite (tested with 18.1)
+- ModelSim — Intel Starter Edition (Run indepndently) (I have used segragately because of directory problem but can be bundled as well)
 
-This repository is updated week-by-week.
+### Simulate a single module ROB test
+cd "E:/SOS proj"
+vlib work
+vlog rob.v tb_rob.v
+vsim -c -do "run -all; quit" tb_rob
 
-### Week 0 — Setup & Prerequisites
+### Run the full integration test
+cd "E:/SOS proj"
+vlib work
+vmap work work
+vlog fetch.v decode.v rename_unit.v dispatch.v register_file.v reservation_station.v alu.v rob.v pravah_top.v tb_pravah_perf.v
+vsim work.tb_pravah_perf
+run -all
 
-### Week 1 — Pipeline Hazards (Theory)
+# Expected output: "PASS" with final register values matching reference.
+# x1=2, x2=3, x3=5, x4=7, x5=34, x6=36, x7=17
 
-### Week 2 — Tomasulo & Scoreboarding — Milestone 1
+### Measure IPC
 
-### Week 3 — Register Renaming & ROB; Verilog Kickoff
+vlog fetch.v decode.v rename_unit.v dispatch.v register_file.v reservation_station.v alu.v rob.v pravah_top.v tb_pravah_perf.v
+vsim -c -do "run -all; quit" tb_pravah_perf
+# Reports IPC for each benchmark:
+# Independent: ss~1.7-2.0
+# Chain:       ss~0.9-1.0
+# Mixed:       ss~1.2-1.6
 
-### Week 4 — Branch Prediction & Reservation Stations — Milestone 2
+## NOTE: In cd command you have to write the path where all rtls, tbs are saved .
+## Like cd "E:/SOS proj"
 
-### Week 5 — Superscalar Issue Logic; Integration Begins
+### Synthesize (Quartus)
 
-### Week 6 — ROB, CDB, Wakeup/Select — Milestone 3
+1. Create a new Quartus project, target device MAX 10 (`10M50DAF484C7G`).
+2. Add all files under `rtl/` to the project (do **not** add `tb/` — testbenches are not synthesizable).
+3. Set `pravah_top` as the top-level entity.
+4. Add `quartus/pravah.sdc` as the SDC timing constraint (20 ns / 50 MHz target).
+5. Run full compilation (`Processing → Start Compilation`).
+6. Read Fmax and resource usage from the Compilation Report → Timing Analyzer (Slow 1200mV 85C Model) and Flow Summary.
 
-### Week 7 — Debugging, IPC, Synthesis
+## Known Limitations
 
-### Week 8 — Polish, Documentation, Final Review
+- **Single commit port:** only one freed physical register is returned to the free list per cycle, even when both ROB slots commit simultaneously. This throttles dispatch in commit-heavy phases and is the primary reason steady-state IPC on the independent benchmark falls short of the 2.0 ceiling.
+- **ALU-only datapath:** no multiplier or load/store unit (RV32M `MUL` and RV32I `LW`/`SW` are not implemented). These were scoped as optional stretch goals.
+- **No branch prediction or recovery:** the base design assumes straight-line code; branch handling was out of scope.
+- **Combinational instruction memory read:** `imem` in `fetch.v` is read asynchronously, so it synthesizes as LUT-based logic rather than embedded block RAM — a deliberate simplicity/latency tradeoff, not a bug.
 
-## Build & simulate
+## Future Work
 
-> Detailed build instructions will be added after Week 5 when the top-level integration begins.
+- Widen the commit port to 2, and re-measure IPC on the independent benchmark to quantify the improvement.
+- Add a pipelined 3-cycle multiplier with CDB arbitration across 3 writers / 2 write ports.
+- Add a blocking load-store unit with store-at-commit semantics.
+- Add branch prediction and speculative-state recovery (flush on misprediction).
 
-**Prerequisites:**
+## References
 
-- Quartus Prime Lite (free) — Intel FPGA toolchain
-- ModelSim-Intel Starter Edition (bundled with Quartus)
+- Hennessy & Patterson, *Computer Architecture: A Quantitative Approach*
+- Tomasulo, R. M. (1967). "An Efficient Algorithm for Exploiting Multiple Arithmetic Units." *IBM Journal of Research and Development.*
+- Wall, D. W. (1991). "Limits of Instruction-Level Parallelism."
+- Lectures of Onur Mutlu and Smriti S Sarangi on Computer Architecture.
 
-Synthesis is run to confirm the RTL is synthesizable and to extract Fmax, logic-element usage, and the timing summary. The design is not deployed on a physical FPGA in this program — that is left as a post-program extension for any mentee who wants to take it further on a Cyclone V, DE10-Lite, or similar Intel board.
+## Demo Video
 
-## Resources we're using
+[Link to 5-minute demo video](#) — https://drive.google.com/drive/folders/1ADpo2Q67bXX-0-1Bc1AOK2g3eoYgZPAP?usp=drive_link
 
-**Textbooks**
+## Author & Acknowledgments
 
-- Hennessy & Patterson — *Computer Architecture: A Quantitative Approach* (6th ed., Chapter 3)
-- Patterson & Hennessy — *Computer Organization and Design* (5th ed., Chapter 4)
-- Shen & Lipasti — *Modern Processor Design: Fundamentals of Superscalar Processors*
-
-**Lectures**
-
-- Onur Mutlu — Computer Architecture, ETH Zürich (YouTube)
-- Smruti Sarangi — Advanced Computer Architecture, NPTEL (IIT Delhi)
-- MIT OCW 6.823 — Computer System Architecture
-
-**Specifications**
-
-- RISC-V Unprivileged ISA Specification
-
-## Reference implementations (for study, not copying)
-
-- [BOOM](https://github.com/riscv-boom/riscv-boom) — Berkeley Out-of-Order Machine
-- [RISC-V Sodor](https://github.com/ucb-bar/riscv-sodor) — Simple educational RISC-V cores
-- [lowRISC ibex](https://github.com/lowRISC/ibex) — Clean in-order RISC-V core
-
-## Mentors
-
-**Krishna Kukreja and Naman Nayak**
-
----
-
-<div align="center">
-
-*"From IPC = 1 to out-of-order in 8 weeks."*
-
-</div>
+Built as part of **Seasons of Code 2026**, IIT Bombay.
+Author: Ashwini Kumar
+Mentors: Krishna Kukreja & Naman Nayak
