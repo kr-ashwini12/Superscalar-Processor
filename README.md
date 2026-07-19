@@ -87,6 +87,7 @@ pravah/
 |   |-- test1.hex
 |-- quartus/
 |   |-- pravah.qpf
+|   |-- pravah.sdc
 |-- tb/
 |   |-- tb_register_file.v
 |   |-- tb_rename_unit.v
